@@ -5,7 +5,10 @@ from PyInstaller.utils.hooks import collect_all
 # paths are relative to this spec file and to the active conda env, so it builds on any machine
 HERE = os.path.dirname(os.path.abspath(SPEC))
 datas = [(os.path.join(HERE, 'src', 'neurite_model.onnx'), '.'), (os.path.join(HERE, 'src', 'cnn_crossing.onnx'), '.')]
-binaries = [(os.path.join(sys.prefix, 'Library', 'bin', '*.dll'), '.')] if sys.platform == 'win32' else []
+import glob
+# conda on Windows keeps the Tk/onnx dlls in Library/bin; python.org / GitHub-hosted Python has no such folder
+_dll_dir = os.path.join(sys.prefix, 'Library', 'bin')
+binaries = [(os.path.join(_dll_dir, '*.dll'), '.')] if sys.platform == 'win32' and glob.glob(os.path.join(_dll_dir, '*.dll')) else []
 hiddenimports = ['PIL._tkinter_finder', 'theme', 'annotator', 'editor', 'test_editor']   # windows imported lazily inside functions
 tmp_ret = collect_all('onnxruntime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
