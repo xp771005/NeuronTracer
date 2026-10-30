@@ -1,0 +1,74 @@
+name: build
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14        # Apple silicon
+            label: mac-apple-silicon
+          - os: macos-13        # Intel
+            label: mac-intel
+          - os: windows-latest
+            label: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download the segmentation model from the "model" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release download model -p neurite_model.onnx -D src --repo ${{ github.repository }} && ls -la src/neurite_model.onnx
+      - name: Install
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy==1.26.4 scipy==1.13.1 scikit-image==0.24.0 onnxruntime==1.18.1 pillow networkx pyinstaller pyinstaller-hooks-contrib
+      - name: Test with Python
+        shell: bash
+        run: python src/app.py --cli sample/test_input.png test_out/python
+      - name: Build
+        shell: bash
+        run: pyinstaller --noconfirm NeuronTracer.spec
+      - name: Locate the built program
+        id: bin
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then echo "exe=dist/NeuronTracer.app/Contents/MacOS/NeuronTracer" >> $GITHUB_OUTPUT; echo "dir=dist/NeuronTracer.app" >> $GITHUB_OUTPUT;
+          else echo "exe=dist/NeuronTracer/NeuronTracer.exe" >> $GITHUB_OUTPUT; echo "dir=dist/NeuronTracer" >> $GITHUB_OUTPUT; fi
+      - name: Test the built program and compare with Python (must print SAME)
+        shell: bash
+        run: |
+          "${{ steps.bin.outputs.exe }}" --cli sample/test_input.png test_out/built
+          if cmp -s test_out/python/test_input_neuron_out/test_input_metrics.csv test_out/built/test_input_neuron_out/test_input_metrics.csv; then echo "SAME"; else echo "DIFFERENT"; diff test_out/python/test_input_neuron_out/test_input_metrics.csv test_out/built/test_input_neuron_out/test_input_metrics.csv; exit 1; fi
+      - name: Edit and review window self-checks inside the built program
+        shell: bash
+        run: |
+          "${{ steps.bin.outputs.exe }}" --check-editor
+          "${{ steps.bin.outputs.exe }}" --check-annotator
+          D="$(dirname "${{ steps.bin.outputs.exe }}")"
+          ls "$D"/editor_selfcheck_ok.txt "$D"/annotator_selfcheck_ok.txt && rm -f "$D"/editor_selfcheck_ok.txt "$D"/annotator_selfcheck_ok.txt
+      - name: Zip
+        shell: bash
+        run: |
+          cd dist
+          if [ "$RUNNER_OS" = "macOS" ]; then ditto -c -k --keepParent NeuronTracer.app ../NeuronTracer-${{ matrix.label }}.zip; else 7z a -r ../NeuronTracer-${{ matrix.label }}.zip NeuronTracer > /dev/null; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuronTracer-${{ matrix.label }}
+          path: NeuronTracer-${{ matrix.label }}.zip
+      - name: Attach to the release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload "${GITHUB_REF_NAME}" NeuronTracer-${{ matrix.label }}.zip --clobber --repo ${{ github.repository }} || gh release create "${GITHUB_REF_NAME}" NeuronTracer-${{ matrix.label }}.zip --title "NeuronTracer ${GITHUB_REF_NAME}" --notes "Built by GitHub Actions. Mac: unzip, right-click NeuronTracer.app, Open (unsigned). Windows: unzip, run NeuronTracer.exe." --repo ${{ github.repository }}
